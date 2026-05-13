@@ -1,0 +1,32 @@
+# Virtual environment
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Environment variables
+.env
+
+# Logs
+logs/
+*.log
+
+# Pytest
+.pytest_cache/
+
+# VSCode/Cursor
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build files
+dist/
+build/
+
+# Coverage
+.coverage
+htmlcov/

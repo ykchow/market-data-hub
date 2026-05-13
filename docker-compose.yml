@@ -1,0 +1,10 @@
+services:
+  market-data-hub:
+    build: .
+    ports:
+      # Host port 8000 -> container port 8000 (matches Dockerfile / uvicorn)
+      - "8000:8000"
+    # Compose requires this path to exist; use an empty .env if you have no vars yet
+    env_file:
+      - .env
+    restart: unless-stopped
