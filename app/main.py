@@ -129,6 +129,7 @@ async def topic_stream(websocket: WebSocket) -> None:
         while True:
             item = await queue.get()
             await websocket.send_json(_serialize_stream_item(item))
+            runtime.hub_metrics.note_downstream_ws_stream_message()
 
     pump_task = asyncio.create_task(pump_queue(), name=f"ws-pump-{consumer_id}")
 

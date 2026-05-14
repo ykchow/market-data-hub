@@ -76,7 +76,7 @@ Prerequisites: Python **3.12+**, dependencies installed ([Setup instructions](#s
 |--------|------|
 | **FastAPI** (`app/main.py`) | Routes, WebSocket protocol, lifespan, mounts status API. |
 | **Configuration** (`app/config.py`) | Env-driven settings (Coinbase URL, default topics, queue size, stale threshold, reconnect delay, log level). |
-| **Runtime** (`app/runtime.py`) | Singletons: `CoinbaseClient`, `ConnectionRegistry`, `PubSubBroker`, `SnapshotStore`. |
+| **Runtime** (`app/runtime.py`) | Singletons: `HubMetrics`, `CoinbaseClient`, `ConnectionRegistry`, `PubSubBroker`, `SnapshotStore`. |
 | **Ingestion** (`app/ingestion/coinbase_client.py`) | Coinbase I/O, reconnect, subscribe set, parse → canonical events → snapshot + broker. |
 | **Registry** (`app/registry/connection_registry.py`) | Consumers, per-topic refcounts, metrics, cleanup on disconnect. |
 | **Pub/sub** (`app/pubsub/broker.py`) | Topic fan-out; bounded queues; **drop oldest** on overflow for slow consumers. |
@@ -210,7 +210,7 @@ Base URL: `http://127.0.0.1:8000` (adjust for host/port).
 |--------|------|-------------|
 | GET | `/` | Minimal index: links to health, status, WebSocket path. |
 | GET | `/health` | Liveness; includes `runtime` readiness (`ready` vs `not_initialized`). |
-| GET | `/status` | Registry summary, snapshot counts, stale topic list, upstream desired topics. |
+| GET | `/status` | Registry summary, snapshot counts, stale topic list, upstream desired topics, **cumulative `metrics`** (derive rates as Δ/Δt). |
 | GET | `/topics` | Merged topic list with refcount, upstream flag, optional snapshot freshness hints. |
 | GET | `/snapshots/{topic}` | Full `TopicSnapshot` plus refcount metadata; **404** if no snapshot row exists yet. |
 
@@ -250,6 +250,15 @@ curl -s http://127.0.0.1:8000/snapshots/BTC-USD
   "upstream": {
     "coinbase_desired_topics": ["BTC-USD"],
     "coinbase_desired_topic_count": 1
+  },
+  "metrics": {
+    "cumulative_since_process_start": true,
+    "process_uptime_seconds": 120.5,
+    "upstream_websocket_messages_received": 4500,
+    "upstream_normalized_market_events": 2100,
+    "broker_queue_puts": 2100,
+    "broker_drop_oldest_total": 0,
+    "downstream_ws_stream_messages_sent": 2100
   }
 }
 ```
@@ -318,7 +327,7 @@ Use this only when your host cannot attach via URL. It starts its **own** `Runti
 - **Single process:** Not a distributed or multi-region HA design; vertical scale limits apply.
 - **No auth:** No authentication or authorization on HTTP/WebSocket (out of scope).
 - **Coinbase-only ingestion:** Other venues would need new ingestion modules; topic naming follows Coinbase-style product ids.
-- **MCP streaming:** Live tick streams are **not** multiplexed through MCP; agents use **`subscribe_to_topic_stream`** for WebSocket instructions only.
+- **MCP streaming (intentional trade-off):** Live tick streams are **not** multiplexed through MCP; agents use **`subscribe_to_topic_stream`** for WebSocket **`/ws`** instructions only. This differs from a strict reading of briefs that require streaming *on* MCP; rationale and spec-alignment note are in [docs/SYSTEM_OVERVIEW.md](docs/SYSTEM_OVERVIEW.md) (MCP Layer).
 - **Valid id ≠ data:** Syntactically valid topics may never receive data (delisted product, upstream error, no activity); `get_topic_snapshot` may return `no_snapshot_yet` until at least one normalized event is merged.
 - **stdio MCP vs uvicorn:** Running **`python -m app.mcp.server`** alongside uvicorn still yields **two** in-memory hubs; prefer the **SSE URL** on the HTTP app for one hub.
 

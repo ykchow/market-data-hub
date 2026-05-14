@@ -66,9 +66,11 @@ async def hub_status(runtime: Annotated[Runtime, Depends(require_runtime)]) -> d
     """Rich operational snapshot: downstream registry, snapshots, and upstream topics.
 
     Pulls async metrics from :meth:`app.registry.connection_registry.ConnectionRegistry.get_status`,
-    summarizes :class:`app.cache.snapshot_store.SnapshotStore` rows, and lists the
+    summarizes :class:`app.cache.snapshot_store.SnapshotStore` rows, lists the
     Coinbase client's desired upstream product set (see
-    :attr:`app.ingestion.coinbase_client.CoinbaseClient.upstream_topics`).
+    :attr:`app.ingestion.coinbase_client.CoinbaseClient.upstream_topics`), and
+    attaches :meth:`app.runtime.HubMetrics.snapshot` cumulative counters under
+    ``metrics`` (since process start; use deltas for rates).
 
     Returns:
         Nested JSON suitable for dashboards and ``curl`` debugging.
@@ -89,6 +91,7 @@ async def hub_status(runtime: Annotated[Runtime, Depends(require_runtime)]) -> d
             "coinbase_desired_topics": upstream_topics,
             "coinbase_desired_topic_count": len(upstream_topics),
         },
+        "metrics": runtime.hub_metrics.snapshot(),
     }
 
 

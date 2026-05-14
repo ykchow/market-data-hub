@@ -46,3 +46,27 @@ def test_remove_consumer_leaves_other_consumers() -> None:
         assert item == {"x": 1}
 
     asyncio.run(_())
+
+
+def test_pubsub_broker_counts_puts_and_drop_oldest_with_metrics() -> None:
+    async def _() -> None:
+        from app.runtime import HubMetrics
+
+        metrics = HubMetrics()
+        broker = PubSubBroker(max_queue_size=2, hub_metrics=metrics)
+        await broker.subscribe_consumer("BTC-USD", "c1")
+        await broker.publish("BTC-USD", {"n": 1})
+        await broker.publish("BTC-USD", {"n": 2})
+        await broker.publish("BTC-USD", {"n": 3})
+        q = broker.get_consumer_queue("c1")
+        assert q is not None
+        assert q.qsize() == 2
+        first = await q.get()
+        second = await q.get()
+        assert first == {"n": 2}
+        assert second == {"n": 3}
+        snap = metrics.snapshot()
+        assert snap["broker_queue_puts"] == 3
+        assert snap["broker_drop_oldest_total"] == 1
+
+    asyncio.run(_())

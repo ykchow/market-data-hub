@@ -68,11 +68,13 @@ class CoinbaseClient:
         snapshot_store: SnapshotStore,
         *,
         channels: tuple[str, ...] = _DEFAULT_CHANNELS,
+        hub_metrics: Any | None = None,
     ) -> None:
         self._settings = settings
         self._broker = broker
         self._snapshot_store = snapshot_store
         self._channels = channels
+        self._hub_metrics = hub_metrics
 
         self._lock = asyncio.Lock()
         # Product IDs we should be subscribed to on the wire (hub demand).
@@ -227,6 +229,8 @@ class CoinbaseClient:
                 raw = await ws.recv()
             except ConnectionClosed:
                 break
+            if self._hub_metrics is not None:
+                self._hub_metrics.note_upstream_websocket_message()
             if isinstance(raw, bytes):
                 try:
                     raw = raw.decode("utf-8")
@@ -256,6 +260,9 @@ class CoinbaseClient:
             await self._broker.publish(event.topic, event)
         except Exception:
             logger.exception("PubSubBroker.publish failed for topic=%s", event.topic)
+        else:
+            if self._hub_metrics is not None:
+                self._hub_metrics.note_upstream_normalized_market_event()
 
     def _parse_raw_to_event(self, raw: str) -> MarketEvent | None:
         """Decode JSON, ignore control messages, return a normalized event or ``None``."""

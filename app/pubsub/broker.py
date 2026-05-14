@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+from typing import Any
 
 
 class PubSubBroker:
@@ -23,13 +24,19 @@ class PubSubBroker:
     queue (callers should embed the topic in the message if consumers need it).
     """
 
-    def __init__(self, max_queue_size: int = 1_000) -> None:
+    def __init__(
+        self,
+        max_queue_size: int = 1_000,
+        *,
+        hub_metrics: Any | None = None,
+    ) -> None:
         """Create a broker with the given per-consumer queue capacity.
 
         ``max_queue_size`` should match application settings (e.g.
         ``Settings.queue_size``) when wired from ``runtime``.
         """
         self._max_queue_size = max_queue_size
+        self._hub_metrics = hub_metrics
         self._lock = asyncio.Lock()
         # topic -> consumers interested in that topic
         self._topic_subscribers: dict[str, set[str]] = defaultdict(set)
@@ -103,17 +110,25 @@ class PubSubBroker:
         if queue.full():
             try:
                 queue.get_nowait()
+                if self._hub_metrics is not None:
+                    self._hub_metrics.note_broker_drop_oldest(1)
             except asyncio.QueueEmpty:
                 pass
         try:
             queue.put_nowait(message)
+            if self._hub_metrics is not None:
+                self._hub_metrics.note_broker_queue_put(1)
         except asyncio.QueueFull:
             # maxsize race: drop again and retry once (e.g. concurrent readers)
             try:
                 queue.get_nowait()
+                if self._hub_metrics is not None:
+                    self._hub_metrics.note_broker_drop_oldest(1)
             except asyncio.QueueEmpty:
                 pass
             try:
                 queue.put_nowait(message)
+                if self._hub_metrics is not None:
+                    self._hub_metrics.note_broker_queue_put(1)
             except asyncio.QueueFull:
                 pass

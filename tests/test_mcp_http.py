@@ -20,3 +20,42 @@ def test_root_lists_mcp_sse_path() -> None:
     with TestClient(app) as client:
         body = client.get("/").json()
     assert body.get("mcp_sse") == "/mcp/sse"
+
+
+def test_hub_metrics_snapshot_shape() -> None:
+    from app.runtime import HubMetrics
+
+    m = HubMetrics()
+    snap = m.snapshot()
+    assert snap["cumulative_since_process_start"] is True
+    assert "process_uptime_seconds" in snap
+    for key in (
+        "upstream_websocket_messages_received",
+        "upstream_normalized_market_events",
+        "broker_queue_puts",
+        "broker_drop_oldest_total",
+        "downstream_ws_stream_messages_sent",
+    ):
+        assert key in snap
+        assert snap[key] == 0
+
+
+def test_downstream_ws_counter_increments() -> None:
+    from app.runtime import HubMetrics
+
+    m = HubMetrics()
+    m.note_downstream_ws_stream_message()
+    m.note_downstream_ws_stream_message()
+    assert m.snapshot()["downstream_ws_stream_messages_sent"] == 2
+
+
+def test_status_endpoint_includes_metrics() -> None:
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as client:
+        body = client.get("/status").json()
+    assert "metrics" in body
+    m = body["metrics"]
+    assert m.get("cumulative_since_process_start") is True
+    uptime = m.get("process_uptime_seconds")
+    assert isinstance(uptime, (int, float))
