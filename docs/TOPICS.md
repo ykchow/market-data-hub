@@ -1,6 +1,6 @@
 # Topics — Market Data Hub
 
-This document is the **topic contract** for the hub: what a topic is, which ids are expected, how events and snapshots are shaped, how often data moves, and what **stale** / **invalid** mean. It is written for **software engineers** and **LLM agents** using REST, WebSocket, or MCP against the same in-process state (see [ARCHITECTURE.md](./ARCHITECTURE.md) and [PROJECT_SUMMARY.md](./PROJECT_SUMMARY.md)).
+This document is the **topic contract** for the hub: what a topic is, which ids are expected, how events and snapshots are shaped, how often data moves, and what **stale** / **invalid** mean. It is written for **software engineers** and **LLM agents** using REST, WebSocket, or MCP against the same in-process state (see [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) and [SYSTEM_OVERVIEW.md](./SYSTEM_OVERVIEW.md)).
 
 ---
 
@@ -34,7 +34,7 @@ Two related ideas:
 
 ## 3. Naming convention
 
-The hub validates WebSocket subscribe topics and several MCP arguments with the same rule as `app.main` / `app.mcp.tools`:
+The hub validates WebSocket subscribe topics and several MCP arguments with the same rule as `app.main` / `app.mcp.tools` (including MCP over SSE on the FastAPI app):
 
 - **Pattern (regex):** `^[A-Z0-9]{1,24}-[A-Z0-9]{1,24}$`
 - **Shape:** `BASE-QUOTE` — exactly **one** hyphen, **ASCII letters and digits only**, **uppercase** segments of **1–24** characters each.
@@ -95,6 +95,8 @@ Each normalized event **updates the snapshot** (if fields are present) and is **
 
 **WebSocket stream backpressure:** Each consumer has one **bounded** `asyncio.Queue` (`Settings.queue_size`, default `1000`). On overflow the broker **drops the oldest** item and enqueues the newest (`PubSubBroker` drop-oldest policy). Streams are **lossy** under slow consumers; use snapshots or timestamps if you need “latest known state” rather than every tick.
 
+**Downstream `/ws` reconnect:** Subscriptions are **per connection**. When the WebSocket **closes** (client, network, proxy idle timeout, server restart), the hub clears that consumer’s topic registrations and broker attachment (same cleanup as disconnect in [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) §4.6). The client must open a **new** `/ws`, send **`subscribe`** again for each topic, and assume **no replay** of missed `MarketEvent`s. Upstream Coinbase reconnect and automatic resubscribe are separate ([SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) §6.4); they do **not** re-push history to an idle downstream socket.
+
 ---
 
 ## 6. Snapshot meaning
@@ -103,7 +105,7 @@ A **snapshot** is the hub’s **best-effort “now”** view for a topic:
 
 - It aggregates **last trade price**, **best bid**, **best ask**, and derived **mid** from the **most recent** normalized events applied to that topic.
 - It is **eventually consistent** with the exchange: reconnects, parse skips, or queue drops can make the stream and snapshot diverge briefly from the venue.
-- **`get_snapshot` returns `None`** (REST/MCP surface this as empty or `no_snapshot_yet`) until **at least one** `MarketEvent` has been merged for that topic in this process.
+- No snapshot row exists until **at least one** `MarketEvent` has been merged for that topic in this process: `SnapshotStore.get_snapshot(topic)` in `app/cache/snapshot_store.py` returns **`None`**; **`GET /snapshots/{topic}`** returns **HTTP 404** when there is no row; MCP **`get_topic_snapshot`** returns **`ok: false`** with **`error_code: "no_snapshot_yet"`**.
 
 Snapshots **persist in memory** after the last downstream client unsubscribes (rows are not deleted on refcount zero); values may be **old** and marked **`stale`** per §7.
 
@@ -123,7 +125,7 @@ So **`stale` does not mean “invalid”**; it means **“not confidently live�
 - Check `snapshot.stale` (and `updated_at`) before quoting a price as live.
 - Not treat HTTP 200 or `ok: true` alone as “fresh”; read the typed fields.
 
-**Related operational signals:** `/status` lists snapshot rows flagged stale under `snapshots.stale_topics`. Upstream reconnect behavior is described in [ARCHITECTURE.md](./ARCHITECTURE.md) §6.
+**Related operational signals:** `/status` lists snapshot rows flagged stale under `snapshots.stale_topics`. Upstream reconnect behavior is in [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) §6; downstream **`/ws`** must **explicitly resubscribe** after any socket close (§5 above, architecture §6.6).
 
 ---
 
@@ -153,9 +155,13 @@ This covers **valid** product ids that are **new**, **never traded yet**, **reje
 
 Malformed frames are skipped with logs. Coinbase `type: "error"` messages are logged; they may not always propagate as a per-client WebSocket error frame. Engineering assumption: **subscription demand** is tracked by the hub; **data presence** is proven by incoming normalized events and snapshot rows.
 
----
+### 8.4 Upstream subscribe transport failure (`upstream_subscribe_failed` on WebSocket)
 
-## 9. Example payloads
+When the hub is the **first** downstream subscriber for a topic (global refcount **0→1**), it must send a Coinbase subscribe frame. If that step raises (for example the upstream socket is down or `send` fails), the WebSocket `subscribe` acknowledgement returns **`ok: false`**, **`error_code: "upstream_subscribe_failed"`**, and a **`detail`** string. The hub **rolls back** the attempted subscribe: it detaches the broker queue for that consumer/topic pair and decrements the registry as if the subscribe never succeeded, so local demand stays consistent with upstream state.
+
+If another consumer already held the topic (refcount already **> 0** before this message), the hub does **not** call `subscribe_topic` again for that transition; this error applies only to the **first-demand** path.
+
+---
 
 ### 9.1 `MarketEvent` — ticker-style
 
@@ -232,7 +238,7 @@ Malformed frames are skipped with logs. Coinbase `type: "error"` messages are lo
 1. Call **`list_available_topics`** (MCP) or **`GET /topics`** (REST) to discover ids and hints (`registry_refcount`, `upstream_desired`, `snapshot.stale`).
 2. Call **`describe_topic_schema`** before inferring field types from stream JSON.
 3. For “current price” questions, prefer **`get_topic_snapshot`** / **`GET /snapshots/{topic}`** and **read `stale` and `updated_at`**.
-4. For live deltas, use **WebSocket `/ws`** with `{"op":"subscribe","topic":"BTC-USD"}`; assume **possible message loss** if the client is slow (bounded queue, drop oldest).
+4. For live deltas, use **WebSocket `/ws`** with `{"op":"subscribe","topic":"BTC-USD"}`; assume **possible message loss** if the client is slow (bounded queue, drop oldest). After **`/ws` disconnects**, reconnect and **send `subscribe` again** for each topic; subscriptions do not carry over.
 5. If `invalid_topic` → fix the string to match §3. If `no_snapshot_yet` → wait for events, verify Coinbase lists the product, or confirm downstream subscription drove upstream demand.
 
 ---

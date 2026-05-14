@@ -6,8 +6,13 @@ This module is a **thin transport adapter**: it registers hub tools from
 and hub I/O live in ``tools.py`` and shared services — nothing business-specific
 is duplicated here.
 
+**Prefer HTTP+SSE on uvicorn (one hub):** With the FastAPI app running, MCP hosts
+that support a URL should connect to ``GET /mcp/sse`` on the same base URL as
+HTTP (see :mod:`app.mcp.http_mcp`). That shares the same :class:`~app.runtime.Runtime`
+as ``/ws`` and REST. Use this stdio entrypoint only when the host cannot use SSE.
+
 -------------------------------------------------------------------------------
-How to run (local)
+How to run (local, stdio — separate process / separate Runtime)
 -------------------------------------------------------------------------------
 
 1. Install the MCP SDK (not listed in the minimal app ``requirements.txt`` yet)::
@@ -26,15 +31,25 @@ How to run (local)
 How to attach from Cursor / Claude Desktop (example)
 -------------------------------------------------------------------------------
 
-Add an MCP server entry whose command runs this module from your project root,
-for example::
+Add an MCP server entry whose **SSE URL** is ``http://127.0.0.1:8000/mcp/sse``
+(adjust host/port). Example::
 
     {
       "mcpServers": {
         "market-data-hub": {
+          "url": "http://127.0.0.1:8000/mcp/sse"
+        }
+      }
+    }
+
+For **stdio** (second process, own ``Runtime``), use command form::
+
+    {
+      "mcpServers": {
+        "market-data-hub-stdio": {
           "command": "python",
           "args": ["-m", "app.mcp.server"],
-          "cwd": "C:/Users/You/Projects/market-data-hub-testing"
+          "cwd": "C:/Users/You/Projects/market-data-hub"
         }
       }
     }
@@ -47,9 +62,10 @@ not open an HTTP port for this transport.
 Notes
 -------------------------------------------------------------------------------
 
-- For live HTTP/WebSocket traffic in parallel, run ``python -m app.main`` (or
-  uvicorn) in a **separate** terminal; the MCP process is its own process with
-  its own in-memory state unless you later design a remote bridge.
+- For the **same** in-memory hub as HTTP/WebSocket, run uvicorn and attach your MCP
+  client to the **SSE** endpoint documented in :mod:`app.mcp.http_mcp` (``/mcp/sse``).
+- For live HTTP/WebSocket traffic **in parallel** with stdio MCP, note that this
+  process is **separate** from uvicorn unless you use the SSE URL on the HTTP app.
 - Tool listings and schemas come from :func:`app.mcp.tools.list_tool_specs`;
   invocation is :func:`app.mcp.tools.handle_tool` with
   :func:`app.runtime.get_runtime`.

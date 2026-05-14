@@ -1,4 +1,4 @@
-# Market Data Hub Testing
+# Market Data Hub
 
 ## Project Objective
 
@@ -15,6 +15,10 @@ The architecture should support:
 - in-memory snapshot state
 - future extensibility for additional exchanges/venues
 - AI/LLM usability through clear MCP tool design and documentation
+
+## Authoritative as-built references
+
+This document states **intent and design goals** (often phrased as *should*). **Concrete behavior** in the repository—topic naming validation, JSON shapes, stale rules, WebSocket and MCP contracts, queue overflow policy, and REST response shapes—is defined in [TOPICS.md](./TOPICS.md), [MCP_CONTEXT.md](./MCP_CONTEXT.md), [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md), and the root [README](../README.md). Prefer those sources when wording here is aspirational or generic.
 
 ---
 
@@ -84,11 +88,11 @@ Primary file:
 
 Example configurations:
 - Coinbase WebSocket URL
-- default symbols/topics
+- default topics
 - queue size limits
 - stale thresholds
-- log levels
 - reconnect intervals
+- log levels
 
 ---
 
@@ -182,14 +186,16 @@ The snapshot store is fully in-memory.
 Responsible for exposing AI-friendly tools so LLM agents can interact with the market data hub.
 
 Primary files:
+- app/mcp/http_mcp.py
 - app/mcp/server.py
 - app/mcp/tools.py
 
-Planned MCP tools:
-- list_available_topics
-- describe_topic_schema
-- get_topic_snapshot
-- subscribe_to_topic_stream
+**Implemented MCP tools** (agent usage: [MCP_CONTEXT.md](./MCP_CONTEXT.md); handlers: `app/mcp/tools.py`):
+
+- `list_available_topics` — configured defaults, registry refcounts, upstream interest, and per-topic snapshot hints.
+- `describe_topic_schema` — JSON Schema for `MarketEvent` and `TopicSnapshot`, plus hub policy fields (stale threshold, queue size).
+- `get_topic_snapshot` — latest in-memory snapshot with refcount and upstream-desired context; errors are explicit (`invalid_topic`, `no_snapshot_yet`).
+- `subscribe_to_topic_stream` — **does not** deliver a live event stream over MCP; returns **WebSocket `/ws` instructions** so clients attach to the same hub process for normalized `MarketEvent` traffic.
 
 ---
 
@@ -275,16 +281,11 @@ Snapshots are eventually consistent and may temporarily lag during reconnects.
 
 # Backpressure Strategy
 
-Each downstream consumer should use a bounded asyncio.Queue.
+Each downstream consumer uses a **bounded** `asyncio.Queue` (size from configuration) so memory per client stays capped and slow readers cannot grow buffers without bound.
 
-The system should prevent slow consumers from affecting overall system health.
+**As implemented:** when a consumer’s queue is full, the broker **drops the oldest** message for that queue and retains newer events (lossy fan-out per slow consumer; ingestion stays non-blocking). See [TOPICS.md](./TOPICS.md) (WebSocket stream backpressure) and the [README](../README.md) architecture summary.
 
-Possible strategies:
-- drop oldest messages
-- disconnect slow consumers
-- apply queue limits
-
-The chosen strategy should be documented clearly.
+Other policies (for example disconnecting slow consumers or coalescing per topic) are not the current default; changing them requires updating `app/pubsub/broker.py` and the same documentation in the same change.
 
 ---
 
@@ -303,6 +304,8 @@ Metrics should be available through:
 - REST endpoints
 - internal runtime state
 - optional MCP exposure
+
+**As implemented:** rich aggregates are available from the status REST API (for example `GET /status`, `GET /topics`) implemented in `app/api/status_routes.py`. MCP tools return **topic- and snapshot-oriented** fields (for example `registry_refcount`, `upstream_desired`, snapshot freshness in `list_available_topics` / `get_topic_snapshot`) rather than a dedicated metrics tool suite.
 
 ---
 
@@ -432,7 +435,7 @@ Tests should prioritize readability and architecture validation over exhaustive 
 # Documentation Requirements
 
 The repository should include:
-- docs/ARCHITECTURE.md
+- docs/SYSTEM_ARCHITECTURE.md
 - docs/MCP_CONTEXT.md
 - docs/TOPICS.md
 - docs/AI_USAGE.md
@@ -481,7 +484,6 @@ The final project should include:
 - AI context documentation
 - tests
 - README
-- walkthrough-ready structure
 
 ---
 
@@ -489,7 +491,7 @@ The final project should include:
 
 - Use in-memory state only
 - Add structured logs
-- Keep the project easy to explain during a walkthrough
+- Keep the project simple
 - Ensure architecture separation is clear
 - Ensure the system is understandable by both engineers and LLM-based agents
 - Ensure future extensibility remains possible without major redesign

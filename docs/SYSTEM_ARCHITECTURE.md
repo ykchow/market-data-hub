@@ -2,7 +2,7 @@
 
 This document describes the architecture of the real-time crypto market data hub: a single-process, asyncio-driven service that owns one upstream WebSocket to Coinbase, normalizes market events, maintains in-memory snapshots, and fans updates out to many downstream consumers. It also exposes operational REST endpoints and an MCP surface for LLM agents.
 
-**Scope:** The design follows the module layout and responsibilities defined in [PROJECT_SUMMARY.md](./PROJECT_SUMMARY.md). Where implementation details are left to code (for example, exact queue overflow policy), this document states the engineering intent and what must remain true for correctness and operability.
+**Scope:** The design follows the module layout and responsibilities defined in [SYSTEM_OVERVIEW.md](./SYSTEM_OVERVIEW.md). Where this document states engineering intent, [TOPICS.md](./TOPICS.md) and the codebase remain authoritative for **as-built** wire shapes and policies (for example queue overflow: **drop-oldest**, see §7 and `app/pubsub/broker.py`).
 
 ---
 
@@ -48,10 +48,11 @@ flowchart LR
   PS --> DS3
   SS --> MCP
   SS --> API
-  PS --> MCP
 ```
 
 Upstream is **1×** per deployment (single process, single Coinbase session strategy). Downstream is **N×** with isolated delivery queues so one slow reader does not block the event loop for others.
+
+**MCP (as implemented):** MCP tools in `app/mcp/tools.py` **read** `SnapshotStore`, `ConnectionRegistry`, and upstream hints from `CoinbaseClient`; they **do not** register a `PubSubBroker` consumer or receive live fan-out over MCP. Live events use WebSocket **`/ws`** per `subscribe_to_topic_stream` (see [MCP_CONTEXT.md](./MCP_CONTEXT.md)). The diagram therefore omits a broker→MCP edge.
 
 ### 1.4 MCP integration goals
 
@@ -67,7 +68,7 @@ Snapshots, subscriber tables, and metrics live **in RAM** for:
 
 - **Latency:** sub-millisecond reads for snapshots and fan-out without I/O.
 - **Simplicity:** no migration, replication lag, or cache invalidation across a DB cluster.
-- **Scope alignment:** historical replay, auth, and multi-region scale are explicit non-goals (see PROJECT_SUMMARY).
+- **Scope alignment:** historical replay, auth, and multi-region scale are explicit non-goals (see [SYSTEM_OVERVIEW.md](./SYSTEM_OVERVIEW.md) — Non-Goals).
 
 **Trade-off:** process restart drops all subscriptions and snapshot state; clients must reconnect and resubscribe. This is documented as expected behavior, not a defect.
 
@@ -86,7 +87,7 @@ Snapshots, subscriber tables, and metrics live **in RAM** for:
 | **Registry** (`app/registry/connection_registry.py`) | Consumer identity, topic refcounts, metrics, lifecycle hooks to broker + client. |
 | **Pub/sub** (`app/pubsub/broker.py`) | Topic channels, per-subscriber bounded queues, non-blocking fan-out. |
 | **Snapshots** (`app/cache/snapshot_store.py`) | Latest bid/ask/trade/mid per topic, timestamps, stale flags. |
-| **MCP** (`app/mcp/server.py`, `app/mcp/tools.py`) | Tool definitions and handlers reading registry + snapshots + streams. |
+| **MCP** (`app/mcp/http_mcp.py`, `app/mcp/server.py`, `app/mcp/tools.py`) | SSE transport on FastAPI (`/mcp/sse`, `/mcp/messages/`) shares `Runtime` with REST/WebSocket; optional stdio server for hosts without URL transport. |
 | **Status API** (`app/api/status_routes.py`) | Health, status, topic list, snapshot fetch for humans and monitors. |
 
 ### 2.2 Layer responsibilities (concise)
@@ -167,7 +168,7 @@ sequenceDiagram
 | **Inputs** | `publish(topic, message)` from ingestion; `subscribe` / `unsubscribe` from registry on behalf of consumers. |
 | **Outputs** | Async iterators or queues consumed by WebSocket send loops; optional drop/overflow signals for metrics. |
 | **Internal behavior** | Maintains a structure like `topic -> set of subscriber queues`. Each queue is **bounded** (`asyncio.Queue(maxsize=…)` from settings). Publish path must not await a slow consumer’s queue indefinitely (see §7). |
-| **Interactions** | **Ingestion** publishes. **FastAPI** consumer tasks read. **MCP** stream tools may attach via the same broker abstraction to avoid duplicating fan-out logic. |
+| **Interactions** | **Ingestion** publishes. **FastAPI** WebSocket consumer tasks read. **MCP** tools do **not** attach broker queues in `app/mcp/tools.py`; live `MarketEvent` delivery to clients uses **`/ws`** subscribers on the same broker abstraction. |
 
 ### 3.5 SnapshotStore
 
@@ -184,20 +185,20 @@ sequenceDiagram
 | | |
 |--|--|
 | **Responsibility** | Host MCP capability negotiation and route tool invocations into application services with correct typing and error surfaces. |
-| **Inputs** | MCP JSON-RPC messages from hosted transport (stdio and/or HTTP, per deployment). |
+| **Inputs** | MCP JSON-RPC over **SSE + POST** on the FastAPI app (`app/mcp/http_mcp.py`: `GET /mcp/sse`, `POST /mcp/messages/…`) sharing uvicorn’s `Runtime`, or over stdio from `python -m app.mcp.server` (separate process). |
 | **Outputs** | Tool results and structured errors. |
-| **Internal behavior** | Thin adapter: no business logic duplicated; validates arguments, calls registry/snapshot/broker, formats responses for LLM consumption. |
-| **Interactions** | Same singletons as FastAPI; must not construct a second parallel hub state. |
+| **Internal behavior** | Thin adapter: no business logic duplicated; validates arguments, calls registry/snapshot services and settings, formats responses for LLM consumption. |
+| **Interactions** | **SSE on uvicorn:** same `Runtime` as FastAPI (preferred). **stdio:** constructs its own `Runtime` in that process — not the same in-memory hub as a concurrent uvicorn unless tools are later bridged remotely. |
 
 ### 3.7 MCP tools
 
 | | |
 |--|--|
-| **Responsibility** | Curated, action-oriented operations (see PROJECT_SUMMARY): list topics, describe schema, read snapshot, attach to stream. |
+| **Responsibility** | Curated, action-oriented operations (see [SYSTEM_OVERVIEW.md](./SYSTEM_OVERVIEW.md) — MCP Tool Design Principles): list topics, describe schema, read snapshot, return WebSocket stream instructions (no live MCP multiplexing). |
 | **Inputs** | Tool arguments (topic id, optional filters). |
 | **Outputs** | JSON-serializable payloads with explicit fields for empty, stale, or error conditions. |
 | **Internal behavior** | Each tool maps to one clear application use case; descriptions carry **when to use** and **failure modes** so agents self-select correctly. |
-| **Interactions** | Read-only for discovery; snapshot reads; streaming coordinates with broker and respects backpressure policy. |
+| **Interactions** | **Read-only** discovery and schema; snapshot and registry/upstream reads via `Runtime`. **`subscribe_to_topic_stream`** does **not** attach to `PubSubBroker`; it returns JSON telling the client to open **`/ws`**. See `app/mcp/tools.py`. |
 
 ### 3.8 Status API
 
@@ -280,7 +281,7 @@ stateDiagram-v2
 2. **Normalization:** Client maps wire format to internal **canonical event** (topic id, event type, numeric fields, exchange timestamp, receive timestamp).
 3. **Snapshot updates:** Snapshot store merges canonical events into per-topic aggregate fields (last trade, best bid/ask, mid, timestamps).
 4. **Pub/sub distribution:** Broker copies the canonical event (or a projection) to each subscriber queue for that topic.
-5. **MCP query flow:** Tool handler reads snapshot store and/or opens a stream via broker; returns structured JSON with staleness and errors explicit.
+5. **MCP query flow:** Tool handlers in `app/mcp/tools.py` **read** `SnapshotStore`, `ConnectionRegistry`, and `CoinbaseClient` (upstream topic hints); they return structured JSON (staleness and errors explicit). **`subscribe_to_topic_stream`** returns **WebSocket `/ws` instructions** only—it does **not** consume `PubSubBroker` queues in the current implementation ([MCP_CONTEXT.md](./MCP_CONTEXT.md)).
 6. **REST query flow:** Status routes return similar data for operators; same snapshot source guarantees **one truth** for “current” view.
 
 ```mermaid
@@ -309,12 +310,15 @@ flowchart TB
   PB --> Q2
   SN --> MCP
   SN --> REST
-  PB --> MCP
 ```
+
+**Diagram note (MCP):** Arrows to **MCP tools** reflect **reads** of materialized snapshot state (and registry/upstream fields returned by tools), not subscription to broker fan-out. Live streams use WebSocket **`/ws`** consumers, which **do** attach to `PubSubBroker`.
 
 ---
 
 ## 6. Reconnect Strategy
+
+**Implementation source of truth:** Upstream connect/read/reconnect and re-subscribe behavior live in **`app/ingestion/coinbase_client.py`** (notably `_run_loop`, `_wire_subscribe_all`, `_receive_until_closed`). Tunable base delay is **`Settings.reconnect_delay_seconds`** in **`app/config.py`**. The bullets below call out **as implemented** vs **intent / not coded** so this section does not overspecify the running system.
 
 ### 6.1 Upstream reconnect handling
 
@@ -326,31 +330,46 @@ When the Coinbase WebSocket drops (network blip, server idle close, protocol err
 
 ### 6.2 Retry strategy
 
-- **Backoff with jitter** to avoid thundering herd against Coinbase.
-- **Cap** maximum interval; log each attempt with structured fields (attempt count, reason).
-- Config exposes base delay, max delay, and possibly max attempts before “degraded” mode (still process downstream reads; snapshot reads return explicit stale).
+**As implemented:** After a failed or closed session, the client sleeps with **exponential backoff** from base **`reconnect_delay_seconds`**, doubling with each attempt (bounded exponent in code), multiplied by **uniform jitter** in **[0.8, 1.2]**, and **capped at 60 seconds** between tries (`_MAX_BACKOFF_SECONDS` in `coinbase_client.py`). Each reconnect attempt is **logged** with delay and attempt number. There is **no** separate “max attempts then give up” mode; the loop runs until process shutdown.
+
+**Intent / not implemented:** A distinct **“degraded”** mode with different user-facing semantics after N failures is **not** present today—snapshots simply go **stale** when data stops arriving ([TOPICS.md](./TOPICS.md) §7).
 
 ### 6.3 Stale state handling
 
-While disconnected or before first post-reconnect message:
+**As implemented:** While the upstream socket is down or quiet, **no new `MarketEvent`** merges into `SnapshotStore`, so `updated_at` stops advancing and **`stale` flips true** once age exceeds **`stale_threshold_seconds`** ([TOPICS.md](./TOPICS.md) §7). Downstream WebSocket **`/ws`** traffic does **not** include a **hub-generated reconnect control frame**; consumers infer freshness from **`received_at` / `exchange_timestamp_ms`**, message gaps, and **`GET /snapshots/{topic}`** / MCP snapshot **`stale` / `updated_at`**.
 
-- Snapshots retain last values but **stale flag** or age exceeds threshold.
-- Streams may emit a **control frame** (implementation choice) indicating reconnect; if not, timestamps on events alone must let consumers infer freshness.
+**Not implemented:** Optional explicit “reconnecting” events on the fan-out stream (beyond normal timestamps) remain a product choice if added later.
 
 ### 6.4 Re-subscription handling
 
-After reconnect, send subscribe messages for the **union** of topics with refcount > 0. Ordering: establish connection, authenticate if required by product, subscribe in batches respecting Coinbase limits, then resume publish loop.
+After each successful upstream connect, **`CoinbaseClient`** sends subscribe frames for its current desired product set (see `_wire_subscribe_all` in `coinbase_client.py`), which tracks hub demand maintained via **`subscribe_topic` / `unsubscribe_topic`** from the registry path—aligned with the **union of topics with downstream refcount > 0** described earlier. Ordering: establish TLS WebSocket, then send Coinbase `subscribe` payloads (batched by product list as implemented); Coinbase Exchange public feed does not require application-level auth in this deployment.
 
 ### 6.5 Heartbeat expectations
 
-Coinbase sends heartbeats or expects client pings depending on API version—client must match documented keepalive. If heartbeats missed:
+**As implemented:** The Python client uses **`websockets.connect(..., ping_interval=20, ping_timeout=20, close_timeout=5)`** so protocol-level **pings** run on the Coinbase connection. Coinbase **`type: "heartbeat"`** JSON messages on the feed are **ignored** for normalization (they do not become `MarketEvent`s). Parse-time **`type: "error"`** from Coinbase is logged and skipped.
 
-- Treat as dead connection; close and reconnect.
-- Do not block the event loop waiting for pong; use timeouts aligned with `websockets` / asyncio wait primitives.
+**Intent:** If pings fail, the library surfaces a closed connection and the **§6.2** reconnect loop runs; the reader does not block the whole event loop on unbounded pong waits beyond those timeouts.
+
+### 6.6 Downstream WebSocket reconnect (`/ws`)
+
+This is **not** the Coinbase session; it is each **hub** WebSocket from a browser, service, or script to FastAPI **`/ws`**.
+
+**As implemented:** Topic subscriptions and broker queues are **per connection** (see §4.6). When a downstream socket **closes** for any reason—client disconnect, tab close, proxy idle timeout, server deploy, network reset—the hub runs the same cleanup as a deliberate disconnect: refcounts drop, queues detach, **no sticky subscription** survives on a future socket.
+
+**Client contract after close:**
+
+1. Open a **new** WebSocket to the same **`/ws`** URL.
+2. Send **`{"op":"subscribe","topic":"<PRODUCT-ID>"}`** again for **every** topic you still need (and wait for `ok: true` acks as on the first connection).
+3. Expect a **gap** in the event stream while the socket was down; the hub does **not** replay missed `MarketEvent`s over `/ws`.
+4. Use **`received_at` / `exchange_timestamp_ms`**, **`GET /snapshots/{topic}`**, or MCP **`get_topic_snapshot`** (`stale`, `updated_at`) to reason about freshness after reconnect—same signals as §6.3.
+
+This behavior is distinct from **§6.4**, where **`CoinbaseClient`** automatically resubscribes upstream after its **own** reconnect while downstream refcounts remain non-zero.
 
 ---
 
 ## 7. Backpressure Strategy
+
+**As implemented in this repository:** each downstream consumer has a **bounded** `asyncio.Queue`; on overflow the broker **drops the oldest** message for that consumer’s queue (lossy fan-out; ingestion stays non-blocking). That behavior is documented for humans and agents in [TOPICS.md](./TOPICS.md) (WebSocket stream backpressure) and the root [README](../README.md) architecture table. The subsections below explain **why** bounded queues exist and which **alternative** policies could replace drop-oldest if product requirements change.
 
 ### 7.1 Bounded asyncio queues
 
@@ -358,23 +377,17 @@ Each downstream consumer uses a **dedicated** `asyncio.Queue` with `maxsize` fro
 
 ### 7.2 Slow consumer handling
 
-Fan-out path must be **non-blocking** for the whole system:
-
-- `put_nowait` with overflow handling, or `put` with a very short timeout followed by drop/disconnect policy—**the exact choice must be one line in config/docs once implemented**; the architecture requires that slow consumers cannot stall ingestion.
+Fan-out path must be **non-blocking** for the whole system: the publish path must not await a slow consumer’s queue indefinitely. The current code path uses non-blocking enqueue with **drop-oldest** on that consumer’s queue when full (see [TOPICS.md](./TOPICS.md) and `app/pubsub/broker.py`). If implementation changes, update broker code and the same docs in the same change.
 
 ### 7.3 Queue overflow behavior
 
-Candidate policies (from product requirements):
+**Implemented policy:** **drop oldest** on the affected consumer’s queue so the newest events remain available (good for tick-heavy dashboards; streams are intentionally lossy under slow readers).
 
-- **Drop oldest** on that consumer’s queue (keeps most recent prices; good for tick-heavy dashboards).
-- **Disconnect** the consumer (strict integrity; operator notices bad clients).
-- **Coalesce** last event per topic (more CPU, less bandwidth).
-
-Pick one primary policy per deployment class; document it in `docs/TOPICS.md` / status endpoint so agents and humans know streams can be lossy.
+**Alternatives** (not the current default): **disconnect** the consumer (strict integrity; operator notices bad clients), or **coalesce** last event per topic (more CPU, less bandwidth). Choosing one of these later would require explicit product sign-off and synchronized updates to broker code and [TOPICS.md](./TOPICS.md).
 
 ### 7.4 Why this strategy fits
 
-Real-time market hubs optimize for **freshness and stability of the median consumer**, not perfect delivery to every client. Bounded queues convert unbounded memory risk into **measurable drops or disconnects**, which is preferable to OOM or global head-of-line blocking.
+Real-time market hubs optimize for **freshness and stability of the median consumer**, not perfect delivery to every client. Bounded queues convert unbounded memory risk into **measurable drops** (and optionally disconnects if policy changes), which is preferable to OOM or global head-of-line blocking.
 
 ---
 

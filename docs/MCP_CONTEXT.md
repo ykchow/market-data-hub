@@ -6,7 +6,13 @@ This document is written for **LLM agents** (and MCP hosts) that call the Market
 
 ## 1. Purpose of the MCP server
 
-The MCP surface exposes **structured, typed operations** over the same in-process hub as FastAPI and WebSocket clients:
+The MCP surface exposes **structured, typed operations** implemented in `app/mcp/tools.py` against a live hub **`Runtime`** (`ConnectionRegistry`, `SnapshotStore`, `CoinbaseClient`, `PubSubBroker`). The FastAPI app uses the **same Python modules and models** for HTTP/WebSocket.
+
+**Process model (read this):** For **one** in-memory hub shared with REST, WebSocket **`/ws`**, and MCP tools, connect your MCP host to the **HTTP+SSE** transport exposed by uvicorn (same process as FastAPI):
+
+- **SSE URL:** `http://127.0.0.1:8000/mcp/sse` when the app listens on port 8000 (see `app/mcp/http_mcp.py`). Hosts that support an MCP “URL” / SSE transport should use this path so tool calls use **`get_runtime()`** from the uvicorn lifespan.
+
+The optional **`python -m app.mcp.server`** entrypoint is a **stdio MCP server in its own OS process** with its **own** `Runtime`. If you run stdio MCP **and** uvicorn together, you still have **two hubs** unless the host uses the SSE URL above. That stdio-only split is noted under [Known limitations](../README.md#known-limitations) and in the [Five-minute smoke test](../README.md#five-minute-smoke-test).
 
 - **Discover** which product ids (topics) the hub knows about and whether there is downstream demand, upstream interest, and snapshot hints.
 - **Understand** canonical JSON shapes for live events (`MarketEvent`) and materialized rows (`TopicSnapshot`) without guessing from raw exchange payloads.
@@ -33,7 +39,7 @@ Failures use:
 | Field | Type | Meaning |
 |--------|------|--------|
 | `ok` | `false` | Do not treat numeric fields as authoritative market truth. |
-| `error_code` | string | Machine tag (`invalid_topic`, `no_snapshot_yet`, `invalid_arguments`, `unknown_tool`, …). |
+| `error_code` | string | Machine tag (`invalid_topic`, `no_snapshot_yet`, `invalid_arguments`, `unknown_tool`, `internal_error`, …). |
 | `detail` | string | Explanation for the model and user. |
 | (optional) | … | Extra context, e.g. `topic`, `registry_refcount`, `requested_name`. |
 
@@ -79,6 +85,17 @@ Valid tool names are exactly this set; any other name yields `unknown_tool`.
 **Use when:** The user wants **live streaming** or you must explain how to attach to the hub’s real-time feed.
 
 **Expectation:** Response explains that MCP streaming is not wired; it returns WebSocket path, handshake, and subscribe message shape.
+
+### 4.5 Downstream `/ws` lifecycle (reconnect and resubscribe)
+
+Hub topic subscriptions are **per WebSocket connection**, not per user or API key.
+
+- After **`/ws` closes** for any reason (network, timeout, server restart, client navigation), that connection’s topics are **cleared** server-side; opening another WebSocket does **not** restore them.
+- The client must **connect again** and send **`subscribe`** once per topic, same as the first session.
+- There is **no replay** of missed `MarketEvent`s over `/ws`; expect a gap, then live traffic again.
+- For “what is the latest known price after a gap?”, use **`get_topic_snapshot`** or REST **`GET /snapshots/{topic}`** and read **`stale`** / **`updated_at`**.
+
+See [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) §6.6 and [TOPICS.md](./TOPICS.md) §5.
 
 ---
 
@@ -146,7 +163,88 @@ Includes `topic`, `registry_refcount`, `active_downstream_demand`, `upstream_des
 
 ### 6.4 `subscribe_to_topic_stream` — success
 
-Includes `topic`, `queue_size_hint`, `streaming_via_mcp: false`, `message`, and `websocket` with `path` (`/ws`), `handshake`, `subscribe_example`, `event_shape`.
+Includes `topic`, `queue_size_hint`, `streaming_via_mcp: false`, `message`, and `websocket` with `path` (`/ws`), `handshake`, `subscribe_example`, `event_shape`, and **`after_close`** (plain-language rule: new socket + resubscribe each topic; no replay).
+
+### 6.5 Full success examples (top-level objects)
+
+These examples show the **full** tool result shape, including the envelope fields `ok`, `error_code`, and `detail`. Values are illustrative; `queue_size_hint` follows your configured `QUEUE_SIZE`.
+
+**`list_available_topics`** (truncated `topics`; your hub may list more rows):
+
+```json
+{
+  "ok": true,
+  "error_code": null,
+  "detail": null,
+  "topics": [
+    {
+      "topic": "BTC-USD",
+      "registry_refcount": 1,
+      "active_downstream_demand": true,
+      "upstream_desired": true,
+      "in_default_catalog": true,
+      "snapshot": {
+        "stale": false,
+        "updated_at": "2026-05-13T18:59:07.500000+00:00"
+      }
+    },
+    {
+      "topic": "ETH-USD",
+      "registry_refcount": 0,
+      "active_downstream_demand": false,
+      "upstream_desired": false,
+      "in_default_catalog": true,
+      "snapshot": null
+    }
+  ],
+  "topic_count": 2,
+  "default_topics": ["BTC-USD", "ETH-USD", "SOL-USD"]
+}
+```
+
+**`get_topic_snapshot`:**
+
+```json
+{
+  "ok": true,
+  "error_code": null,
+  "detail": null,
+  "topic": "BTC-USD",
+  "registry_refcount": 1,
+  "active_downstream_demand": true,
+  "upstream_desired": true,
+  "snapshot": {
+    "topic": "BTC-USD",
+    "last_trade_price": 98123.45,
+    "best_bid": 98120.0,
+    "best_ask": 98125.5,
+    "mid_price": 98122.75,
+    "updated_at": "2026-05-13T18:59:07.500000+00:00",
+    "stale": false
+  }
+}
+```
+
+**`subscribe_to_topic_stream`:**
+
+```json
+{
+  "ok": true,
+  "error_code": null,
+  "detail": null,
+  "topic": "SOL-USD",
+  "queue_size_hint": 1000,
+  "streaming_via_mcp": false,
+  "message": "Live multiplexed streaming is not implemented on this MCP surface yet. Use the hub WebSocket endpoint with a subscribe control message instead.",
+  "websocket": {
+    "path": "/ws",
+    "handshake": "Standard FastAPI WebSocket upgrade on the same base URL as HTTP.",
+    "subscribe_example": { "op": "subscribe", "topic": "SOL-USD" },
+    "event_shape": "Same fields as MarketEvent (see describe_topic_schema).",
+    "after_close": "Subscriptions are per WebSocket. After any close, open a new /ws connection and send subscribe again for each topic; missed events are not replayed."
+  }
+}
+```
 
 ---
 
@@ -163,7 +261,7 @@ Includes `topic`, `queue_size_hint`, `streaming_via_mcp: false`, `message`, and 
 
 1. **Call** `subscribe_to_topic_stream` with `{ "topic": "SOL-USD" }`.
 2. **Read** `websocket.path`, `websocket.subscribe_example`.
-3. **Instruct** the human or client: open WebSocket to `/ws` on the same base URL, send `{"op":"subscribe","topic":"SOL-USD"}` after connect; events match `MarketEvent` (see `describe_topic_schema`).
+3. **Instruct** the human or client: open WebSocket to `/ws` on the same base URL, send `{"op":"subscribe","topic":"SOL-USD"}` after connect; events match `MarketEvent` (see `describe_topic_schema`). If the socket later drops, they must **reconnect and subscribe again**; the hub does not restore topics on a new socket or replay gaps (see §4.5).
 
 ### Example C — Schema before coding
 
@@ -180,8 +278,13 @@ Includes `topic`, `queue_size_hint`, `streaming_via_mcp: false`, `message`, and 
 | `no_snapshot_yet` | Pattern valid but no snapshot row in this process | See §10 (unknown / no-data topic handling). |
 | `invalid_arguments` | Missing/non-string `topic`, or arguments passed to `list_available_topics` | Send required string fields; use `{}` for list tool. |
 | `unknown_tool` | Host called a name not in the four tools | Use only registered tool names from `list_tool_specs`. |
+| `internal_error` | Dispatch bug or unexpected server state (should be rare) | Retry once; if it persists, treat the hub as unhealthy and use logs or `/status`; do not invent prices. |
 
-**Operational failures (not always separate MCP error codes):** Upstream disconnect, quiet market, or no events yet can yield **stale** snapshots or missing mids (`mid_price` null when bid or ask missing). Coinbase may reject some product ids; the hub may log errors while `get_topic_snapshot` still returns `no_snapshot_yet` until a normalized event merges.
+**`describe_topic_schema`:** A successful response (`ok: true`) only means the `topic` string passed the **BASE-QUOTE** pattern check. It does **not** prove Coinbase lists the product, that upstream has accepted a subscription, or that a snapshot row exists—use **`list_available_topics`**, **`get_topic_snapshot`**, or WebSocket subscribe + events to establish **data presence**.
+
+**Coinbase wire / subscription problems:** Rejected subscriptions, unknown product ids on the exchange, or Coinbase `type: "error"` frames are typically **logged** only. MCP tools do **not** expose a separate `error_code` for Coinbase-specific failures. Infer health from **`registry_refcount`**, **`upstream_desired`**, **`no_snapshot_yet`**, **`snapshot.stale`**, and **`snapshot.updated_at`** (and operator logs or **`GET /status`** when available)—not from a dedicated Coinbase error field in tool results.
+
+**Operational failures (not always separate MCP error codes):** Upstream disconnect, quiet market, or no events yet can yield **stale** snapshots or missing mids (`mid_price` null when bid or ask missing). Until a normalized event merges into the snapshot store, **`get_topic_snapshot`** may remain **`no_snapshot_yet`** even when the id is pattern-valid (see Coinbase note above).
 
 **Stream loss:** WebSocket delivery uses bounded queues; slow consumers may **drop oldest** messages. Prefer snapshot + timestamps for “latest known” state.
 
@@ -252,6 +355,7 @@ The hub has **not** merged any `MarketEvent` for that id in this process. Possib
 
 ## Related documents
 
+- [README.md](../README.md) — local run, smoke test, and **MCP vs uvicorn** (separate processes).
 - [TOPICS.md](./TOPICS.md) — topic naming, `MarketEvent` / `TopicSnapshot` fields, stale rules, WebSocket examples.
-- [ARCHITECTURE.md](./ARCHITECTURE.md) — data flow, registry, broker, snapshot store, reconnect intent.
-- [PROJECT_SUMMARY.md](./PROJECT_SUMMARY.md) — project scope, MCP design principles, non-goals.
+- [SYSTEM_ARCHITECTURE.md](./SYSTEM_ARCHITECTURE.md) — data flow, registry, broker, snapshot store, reconnect intent.
+- [SYSTEM_OVERVIEW.md](./SYSTEM_OVERVIEW.md) — project scope, MCP design principles, non-goals.

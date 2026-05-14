@@ -25,6 +25,189 @@ The workflow is intentionally architecture-first and implementation-second to:
 
 ---
 
+# Prompts for System Architecture generation
+
+## Technical Design
+
+```text
+Read docs/SYSTEM_OVERVIEW.md first.
+
+Now generate docs/SYSTEM_ARCHITECTURE.md.
+
+The document should be written like a professional engineering architecture document for a real-time streaming system.
+
+Include the following sections:
+
+1. System Overview
+- overall purpose
+- centralized market data hub model
+- single upstream / many downstream architecture
+- MCP integration goals
+- in-memory design rationale
+
+2. High-Level Architecture
+- explain all major components
+- describe responsibilities of each layer
+- explain data flow between components
+
+3. Component Breakdown
+For each component explain:
+- responsibility
+- inputs/outputs
+- internal behavior
+- interactions with other components
+
+Components:
+- FastAPI App
+- CoinbaseClient
+- ConnectionRegistry
+- PubSubBroker
+- SnapshotStore
+- MCP Server
+- MCP Tools
+- Status API
+
+4. Subscription Lifecycle
+Explain:
+- downstream consumer connects
+- consumer subscribes to topic
+- registry reference count increments
+- upstream Coinbase subscription creation
+- message fan-out flow
+- unsubscribe flow
+- disconnect cleanup
+- upstream teardown when reference count reaches zero
+
+5. Data Flow
+Explain end-to-end flow:
+- Coinbase message ingestion
+- normalization
+- snapshot updates
+- pub/sub distribution
+- MCP query flow
+- REST API query flow
+
+6. Reconnect Strategy
+Explain:
+- upstream reconnect handling
+- retry strategy
+- stale state handling
+- re-subscription handling
+- heartbeat expectations
+
+7. Backpressure Strategy
+Explain:
+- bounded asyncio queues
+- slow consumer handling
+- queue overflow behavior
+- why the chosen strategy is appropriate
+
+8. Failure Handling
+Explain:
+- stale topics
+- connection drops
+- malformed messages
+- unknown topics
+- partial failures
+- snapshot unavailability
+
+9. Scalability Considerations
+Explain:
+- why pub/sub is used
+- fan-out scalability
+- exchange extensibility
+- memory limitations
+- single-process limitations
+- future horizontal scaling considerations
+
+10. Trade-Offs
+Explain trade-offs such as:
+- in-memory vs database
+- simplicity vs scalability
+- single-process vs distributed
+- snapshot-only vs historical persistence
+
+11. Future Extensibility
+Explain how future exchanges can be added.
+
+12. Deployment Model
+Explain:
+- Docker deployment
+- local development
+- single-container approach
+
+13. Testing Strategy
+Explain what is tested and why.
+
+14. AI/LLM Usability
+Explain:
+- why MCP exists
+- why documentation is important
+- how the tool naming/design helps LLM agents
+
+Important:
+- Keep explanations practical and engineering-focused
+- Avoid generic AI-generated fluff
+- Use concise but detailed explanations
+- Include Mermaid diagrams where appropriate
+- Make the document walkthrough/interview friendly
+```
+
+---
+
+## Architecture diagram
+
+```text
+Read docs/SYSTEM_OVERVIEW.md first.
+
+Generate a detailed Mermaid architecture diagram and place it into docs/SYSTEM_ARCHITECTURE.md.
+
+The diagram should clearly show:
+
+External Systems:
+- Coinbase WebSocket Feed
+- Downstream WebSocket Consumers
+- LLM / AI Agent
+
+Internal Components:
+- FastAPI App
+- CoinbaseClient
+- ConnectionRegistry
+- PubSubBroker
+- SnapshotStore
+- MCP Server
+- MCP Tools
+- Status API
+
+The diagram must show:
+1. Coinbase ingestion flow
+2. Message normalization flow
+3. Snapshot update flow
+4. Pub/sub fan-out flow
+5. Consumer subscribe/unsubscribe flow
+6. Reference-count management flow
+7. MCP query flow
+8. REST API query flow
+9. Upstream subscription lifecycle
+10. Disconnect cleanup flow
+
+Also include labels showing:
+- bounded queues
+- in-memory snapshot cache
+- reference-counted subscriptions
+- reconnect handling
+- stale state detection
+
+Generate:
+- one high-level architecture diagram
+- one subscription lifecycle sequence diagram
+- one message flow sequence diagram
+
+Use Mermaid syntax only.
+```
+
+---
+
 # Prompts for File Generation In Order
 
 ## 1. app/config.py

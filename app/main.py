@@ -13,6 +13,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
 from app.api.status_routes import router as status_router
+from app.mcp.http_mcp import MCP_SSE_PATH, install_mcp_http
 from app.models.market_data import (
     MarketEvent,
     SubscribeRequest,
@@ -60,6 +61,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.include_router(status_router)
+install_mcp_http(app)
 
 
 @app.get("/")
@@ -70,6 +72,7 @@ def root() -> dict[str, str]:
         "health": "/health",
         "status": "/status",
         "topics_ws": "/ws",
+        "mcp_sse": MCP_SSE_PATH,
     }
 
 
@@ -95,6 +98,10 @@ async def topic_stream(websocket: WebSocket) -> None:
 
         {"ok": true|false, "op": "subscribe"|"unsubscribe", "topic": "<id>",
          "error_code": null | "<code>", "detail": null | "<message>"}
+
+      For ``subscribe``, ``error_code`` may include ``invalid_topic``,
+      ``unknown_consumer``, or ``upstream_subscribe_failed`` (first downstream
+      demand for a topic when the hub cannot complete the Coinbase subscribe).
 
     - When data is available, one JSON object per normalized event, using the
       same field names as ``MarketEvent`` (``topic``, ``event_type``, ``price``,
@@ -213,7 +220,6 @@ async def _handle_subscribe(
         return
 
     await runtime.broker.subscribe_consumer(req.topic, consumer_id)
-    queue_ready.set()
 
     after = await runtime.connection_registry.get_status()
     rc_after = _topic_refcount(after, req.topic)
@@ -222,6 +228,23 @@ async def _handle_subscribe(
             await runtime.coinbase_client.subscribe_topic(req.topic)
         except Exception:
             logger.exception("upstream subscribe failed for topic %s", req.topic)
+            await runtime.broker.unsubscribe_consumer(req.topic, consumer_id)
+            await runtime.connection_registry.unsubscribe(consumer_id, req.topic)
+            await websocket.send_json(
+                SubscriptionResponse(
+                    ok=False,
+                    op="subscribe",
+                    topic=req.topic,
+                    error_code="upstream_subscribe_failed",
+                    detail=(
+                        "The hub could not complete the upstream subscription for this topic. "
+                        "See server logs. The subscribe was not applied."
+                    ),
+                ).model_dump(mode="json")
+            )
+            return
+
+    queue_ready.set()
 
     await websocket.send_json(
         SubscriptionResponse(
@@ -286,9 +309,7 @@ async def _cleanup_ws_consumer(runtime: Runtime, consumer_id: str) -> None:
             break
 
     await runtime.connection_registry.unregister_consumer(consumer_id)
-
-    for topic in topics:
-        await runtime.broker.unsubscribe_consumer(topic, consumer_id)
+    await runtime.broker.remove_consumer(consumer_id)
 
     final = await runtime.connection_registry.get_status()
     for topic in topics:
@@ -297,3 +318,4 @@ async def _cleanup_ws_consumer(runtime: Runtime, consumer_id: str) -> None:
                 await runtime.coinbase_client.unsubscribe_topic(topic)
             except Exception:
                 logger.exception("upstream unsubscribe on disconnect for topic %s", topic)
+

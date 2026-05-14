@@ -7,12 +7,13 @@ read-only hub services (registry, snapshot store, settings).
 
 **Intended MCP usage**
 
-- Host process (stdio, HTTP, or embedded) loads :func:`list_tool_specs` during
-  capability negotiation so the model sees action-oriented tool names and
-  when to call each tool.
+- Host process loads :func:`list_tool_specs` during capability negotiation. For the **same**
+  in-memory hub as REST/WebSocket, attach over **SSE** to the running FastAPI app
+  (``GET /mcp/sse`` on uvicorn; see :mod:`app.mcp.http_mcp`). For stdio-only hosts,
+  ``python -m app.mcp.server`` uses a **separate** ``Runtime`` in that process.
 - On ``tools/call``, the host parses JSON arguments, resolves the shared
-  :class:`~app.runtime.Runtime` singleton (same instance as FastAPI), and awaits
-  :func:`handle_tool` so registry metrics stay consistent with REST.
+  :class:`~app.runtime.Runtime` singleton (same instance as FastAPI when using SSE),
+  and awaits :func:`handle_tool` so registry metrics stay consistent with REST.
 - Agents should **list topics and schema first**, then **read snapshots**; live
   streaming is not implemented over MCP in this module—see
   :func:`subscribe_to_topic_stream` for the supported WebSocket-based path.
@@ -31,6 +32,13 @@ from app.runtime import Runtime
 
 # Coinbase-style product id: BASE-QUOTE (aligned with ``app.main`` WebSocket gate).
 _TOPIC_PATTERN: Final[re.Pattern[str]] = re.compile(r"^[A-Z0-9]{1,24}-[A-Z0-9]{1,24}$")
+
+# LLM/host-facing: same rule as ``_TOPIC_PATTERN`` (see docs/MCP_CONTEXT.md §5.5).
+_TOPIC_ID_ARG_DESCRIPTION: Final[str] = (
+    "BASE-QUOTE product id: ASCII uppercase letters and digits only, exactly one hyphen, "
+    "1-24 characters per segment (e.g. BTC-USD, ETH-USD). "
+    "Pattern ^[A-Z0-9]{1,24}-[A-Z0-9]{1,24}$."
+)
 
 _TOOL_NAMES: Final[frozenset[str]] = frozenset(
     {
@@ -82,10 +90,12 @@ def list_tool_specs() -> list[dict[str, Any]]:
                 "Discover which market topics this hub knows about: configured defaults, "
                 "upstream Coinbase subscription interest, in-memory snapshots, and downstream "
                 "registry demand. Call this first before querying prices so you use real topic "
-                "ids (e.g. BTC-USD)."
+                "ids (e.g. BTC-USD). "
+                "Pass arguments as an empty JSON object {}; any property yields invalid_arguments."
             ),
             "inputSchema": {
                 "type": "object",
+                "description": "Must be empty (no properties).",
                 "properties": {},
                 "additionalProperties": False,
             },
@@ -102,7 +112,7 @@ def list_tool_specs() -> list[dict[str, Any]]:
                 "properties": {
                     "topic": {
                         "type": "string",
-                        "description": "Product id in BASE-QUOTE form, e.g. BTC-USD.",
+                        "description": _TOPIC_ID_ARG_DESCRIPTION,
                     },
                 },
                 "required": ["topic"],
@@ -121,7 +131,7 @@ def list_tool_specs() -> list[dict[str, Any]]:
                 "properties": {
                     "topic": {
                         "type": "string",
-                        "description": "Product id, e.g. ETH-USD.",
+                        "description": _TOPIC_ID_ARG_DESCRIPTION,
                     },
                 },
                 "required": ["topic"],
@@ -131,16 +141,16 @@ def list_tool_specs() -> list[dict[str, Any]]:
         {
             "name": "subscribe_to_topic_stream",
             "description": (
-                "Placeholder: MCP transports used here do not expose a duplex event stream yet. "
-                "Returns instructions to subscribe via the hub WebSocket API for real-time "
-                "normalized MarketEvent messages."
+                "Does not stream live events over MCP. Returns JSON with WebSocket path (/ws), "
+                "handshake note, subscribe_example, and after_close: subscriptions are per socket—"
+                "after any /ws close the client must reconnect and subscribe again; no replay."
             ),
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "topic": {
                         "type": "string",
-                        "description": "Product id to stream after connecting, e.g. SOL-USD.",
+                        "description": _TOPIC_ID_ARG_DESCRIPTION,
                     },
                 },
                 "required": ["topic"],
@@ -303,6 +313,11 @@ def subscribe_to_topic_stream(runtime: Runtime, topic: str) -> dict[str, Any]:
                 "handshake": "Standard FastAPI WebSocket upgrade on the same base URL as HTTP.",
                 "subscribe_example": {"op": "subscribe", "topic": topic},
                 "event_shape": "Same fields as MarketEvent (see describe_topic_schema).",
+                "after_close": (
+                    "Subscriptions are per WebSocket. After any close, open a new connection "
+                    "to /ws and send subscribe again for each topic; missed MarketEvents are not "
+                    "replayed."
+                ),
             },
         }
     )

@@ -53,6 +53,24 @@ class PubSubBroker:
             if not subs:
                 del self._topic_subscribers[topic]
 
+    async def remove_consumer(self, consumer_id: str) -> None:
+        """Detach ``consumer_id`` from every topic and delete their delivery queue.
+
+        Used when a downstream connection closes so ``_queues`` does not grow
+        without bound across reconnects. Per-topic :meth:`unsubscribe_consumer`
+        remains for incremental unsubscribes while the connection stays open.
+
+        Idempotent: missing consumers are ignored.
+        """
+        async with self._lock:
+            for topic, subs in list(self._topic_subscribers.items()):
+                if consumer_id not in subs:
+                    continue
+                subs.discard(consumer_id)
+                if not subs:
+                    del self._topic_subscribers[topic]
+            self._queues.pop(consumer_id, None)
+
     async def publish(self, topic: str, message: object) -> None:
         """Fan out ``message`` to every queue subscribed to ``topic``.
 
