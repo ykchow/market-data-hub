@@ -2,7 +2,7 @@
 
 This document describes the architecture of the real-time crypto market data hub: a single-process, asyncio-driven service that owns one upstream WebSocket to Coinbase, normalizes market events, maintains in-memory snapshots, and fans updates out to many downstream consumers. It also exposes operational REST endpoints and an MCP surface for LLM agents.
 
-**Scope:** The design follows the module layout and responsibilities defined in [SYSTEM_OVERVIEW.md](./SYSTEM_OVERVIEW.md). Where this document states engineering intent, [TOPICS.md](./TOPICS.md) and the codebase remain authoritative for **as-built** wire shapes and policies (for example queue overflow: **drop-oldest**, see §7 and `app/pubsub/broker.py`).
+**Scope:** The design follows the module layout and responsibilities defined in [SYSTEM_OVERVIEW.md](./SYSTEM_OVERVIEW.md). 
 
 ---
 
@@ -332,11 +332,11 @@ When the Coinbase WebSocket drops (network blip, server idle close, protocol err
 
 **As implemented:** After a failed or closed session, the client sleeps with **exponential backoff** from base **`reconnect_delay_seconds`**, doubling with each attempt (bounded exponent in code), multiplied by **uniform jitter** in **[0.8, 1.2]**, and **capped at 60 seconds** between tries (`_MAX_BACKOFF_SECONDS` in `coinbase_client.py`). Each reconnect attempt is **logged** with delay and attempt number. There is **no** separate “max attempts then give up” mode; the loop runs until process shutdown.
 
-**Intent / not implemented:** A distinct **“degraded”** mode with different user-facing semantics after N failures is **not** present today—snapshots simply go **stale** when data stops arriving ([TOPICS.md](./TOPICS.md) §7).
+**Intent / not implemented:** A distinct **“degraded”** mode with different user-facing semantics after N failures is **not** present today—snapshots simply go **stale** when data stops arriving ([TOPICS.md](./TOPICS.md) ).
 
 ### 6.3 Stale state handling
 
-**As implemented:** While the upstream socket is down or quiet, **no new `MarketEvent`** merges into `SnapshotStore`, so `updated_at` stops advancing and **`stale` flips true** once age exceeds **`stale_threshold_seconds`** ([TOPICS.md](./TOPICS.md) §7). Downstream WebSocket **`/ws`** traffic does **not** include a **hub-generated reconnect control frame**; consumers infer freshness from **`received_at` / `exchange_timestamp_ms`**, message gaps, and **`GET /snapshots/{topic}`** / MCP snapshot **`stale` / `updated_at`**.
+**As implemented:** While the upstream socket is down or quiet, **no new `MarketEvent`** merges into `SnapshotStore`, so `updated_at` stops advancing and **`stale` flips true** once age exceeds **`stale_threshold_seconds`** ([TOPICS.md](./TOPICS.md) ). Downstream WebSocket **`/ws`** traffic does **not** include a **hub-generated reconnect control frame**; consumers infer freshness from **`received_at` / `exchange_timestamp_ms`**, message gaps, and **`GET /snapshots/{topic}`** / MCP snapshot **`stale` / `updated_at`**.
 
 **Not implemented:** Optional explicit “reconnecting” events on the fan-out stream (beyond normal timestamps) remain a product choice if added later.
 
@@ -348,13 +348,13 @@ After each successful upstream connect, **`CoinbaseClient`** sends subscribe fra
 
 **As implemented:** The Python client uses **`websockets.connect(..., ping_interval=20, ping_timeout=20, close_timeout=5)`** so protocol-level **pings** run on the Coinbase connection. Coinbase **`type: "heartbeat"`** JSON messages on the feed are **ignored** for normalization (they do not become `MarketEvent`s). Parse-time **`type: "error"`** from Coinbase is logged and skipped.
 
-**Intent:** If pings fail, the library surfaces a closed connection and the **§6.2** reconnect loop runs; the reader does not block the whole event loop on unbounded pong waits beyond those timeouts.
+**Intent:** If pings fail, the library surfaces a closed connection and the reconnect loop runs; the reader does not block the whole event loop on unbounded pong waits beyond those timeouts.
 
 ### 6.6 Downstream WebSocket reconnect (`/ws`)
 
 This is **not** the Coinbase session; it is each **hub** WebSocket from a browser, service, or script to FastAPI **`/ws`**.
 
-**As implemented:** Topic subscriptions and broker queues are **per connection** (see §4.6). When a downstream socket **closes** for any reason—client disconnect, tab close, proxy idle timeout, server deploy, network reset—the hub runs the same cleanup as a deliberate disconnect: refcounts drop, queues detach, **no sticky subscription** survives on a future socket.
+**As implemented:** Topic subscriptions and broker queues are **per connection**. When a downstream socket **closes** for any reason—client disconnect, tab close, proxy idle timeout, server deploy, network reset—the hub runs the same cleanup as a deliberate disconnect: refcounts drop, queues detach, **no sticky subscription** survives on a future socket.
 
 **Client contract after close:**
 

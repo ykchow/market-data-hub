@@ -347,16 +347,6 @@ This is expected behavior for an in-memory hub, not a defect.
 
 ---
 
-## Walkthrough notes
-
-- **Story arc:** Start at `/health` and `/status`, open `/ws` and subscribe to `BTC-USD`, watch `MarketEvent` frames, then compare **`GET /snapshots/BTC-USD`** to the stream (one truth from `SnapshotStore`).
-- **Refcount demo:** Two browser tabs or two WebSocket clients subscribing to the same topic show refcount > 1; unsubscribe one tab and show upstream remains until the last consumer drops the topic.
-- **Stale semantics:** After pausing the upstream or waiting past `STALE_THRESHOLD_SECONDS`, show `stale: true` while values may still be present ([docs/TOPICS.md](docs/TOPICS.md) §7).
-- **Code map:** Ingestion and Coinbase protocol details stay in `app/ingestion/`; registry and broker explain “who wants what” and “how delivery is isolated”; `app/models/market_data.py` defines the canonical JSON shapes.
-- **AI transparency:** AI-assisted scaffolding and docs are acknowledged in [docs/SYSTEM_OVERVIEW.md](docs/SYSTEM_OVERVIEW.md) and [docs/AI_USAGE.md](docs/AI_USAGE.md); validate behavior against running services and tests.
-
----
-
 ## Documentation index
 
 | Document | Content |

@@ -6,8 +6,6 @@ The workflow is intentionally architecture-first and implementation-second to:
 - reduce debugging complexity
 - avoid overengineering
 - maintain architectural consistency
-- improve explainability during walkthroughs
-- align with assignment evaluation criteria
 
 ---
 
@@ -279,7 +277,7 @@ Requirements:
 - cleanup all subscriptions on disconnect
 - expose status/metrics
 - use asyncio.Lock for safe updates
-- keep logic simple and easy to explain
+- keep logic simple
 - add comments/docstrings
 ```
 
@@ -597,28 +595,6 @@ Include:
 
 ---
 
-## docs/AI_USAGE.md
-
-```text
-Read:
-- docs/SYSTEM_OVERVIEW.md
-- docs/SYSTEM_ARCHITECTURE.md
-
-Generate docs/AI_USAGE.md.
-
-Explain transparently how Cursor AI / LLM assistance was used:
-- requirements summarization
-- architecture drafting
-- code scaffolding
-- implementation assistance
-- documentation drafting
-- review and refinement
-
-Also state that generated code was reviewed and validated manually.
-Keep it professional and concise.
-```
-
----
 
 # Deployment Files
 
@@ -835,14 +811,4 @@ Determine whether:
 - an LLM agent could use the MCP tools correctly on first attempt
 
 Suggest targeted documentation improvements only.
-```
-
----
-
-# Final Reminder
-
-After each file generation prompt, tell Cursor:
-
-```text
-Do not modify other files unless absolutely necessary.
 ```

@@ -197,7 +197,7 @@ Primary files:
 - `get_topic_snapshot` — latest in-memory snapshot with refcount and upstream-desired context; errors are explicit (`invalid_topic`, `no_snapshot_yet`).
 - `subscribe_to_topic_stream` — **does not** deliver a live event stream over MCP; returns **WebSocket `/ws` instructions** so clients attach to the same hub process for normalized `MarketEvent` traffic.
 
-**Spec alignment (explicit):** Some briefs list “subscribe and stream messages” as an MCP tool minimum. This implementation **intentionally does not** multiplex live `MarketEvent` traffic over MCP transports (SSE/stdio). Reasons: volume and latency expectations for market ticks, host and transport limits, and keeping one shared in-process hub for REST, MCP reads, and **`/ws`** fan-out. Agents still get a **single documented path** to streaming (`subscribe_to_topic_stream` → `/ws`). A future iteration could add MCP-native streaming if a host and SDK pattern are chosen (for example sampling, coalescing, or a dedicated side channel).
+**Spec alignment (explicit):** Some briefs list “subscribe and stream messages” as an MCP tool minimum. This implementation **intentionally does not** multiplex live `MarketEvent` traffic over MCP transports (SSE/stdio). Reasons: volume and latency expectations for market ticks, host and transport limits, and keeping one shared in-process hub for REST, MCP reads, and **`/ws`** fan-out. Agents still get a **single documented path** to streaming (`subscribe_to_topic_stream` → `/ws`).
 
 ---
 
@@ -219,8 +219,6 @@ Example endpoints:
 # Coinbase Constraints
 
 The ingestion layer should consider:
-- Coinbase subscription limits
-- maximum topics per subscription
 - message throughput constraints
 - reconnect handling
 - heartbeat handling
@@ -321,7 +319,6 @@ The system and documentation should clearly explain:
 - slow consumer handling
 - queue overflow behavior
 - snapshot unavailability
-- partial subscription failures
 
 AI-facing documentation should explain what errors or responses an agent should expect.
 
@@ -352,6 +349,8 @@ The documentation should be written so that an LLM can:
 - select the correct MCP tools
 - query current market state correctly
 - subscribe to streams correctly
+
+Live streaming is WebSocket-only; MCP covers discovery, schema, snapshots, and stream setup instructions; see MCP_CONTEXT.md for error codes and limitations.
 
 The goal is for an LLM agent to succeed using only the provided documentation and MCP tool definitions.
 
@@ -440,7 +439,7 @@ The repository should include:
 - docs/SYSTEM_ARCHITECTURE.md
 - docs/MCP_CONTEXT.md
 - docs/TOPICS.md
-- docs/AI_USAGE.md
+- docs/AGENT_USAGE.md
 
 The documentation is considered a first-class deliverable.
 
