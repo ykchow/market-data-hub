@@ -1,15 +1,6 @@
-# Cursor AI Prompt Guide — Market Data Hub
+# Playbook of prompts and workflow steps — Market Data Hub
 
-This document contains the recommended Cursor AI prompts for building the `market-data-hub` assignment incrementally and safely.
-
-The workflow is intentionally architecture-first and implementation-second to:
-- reduce debugging complexity
-- avoid overengineering
-- maintain architectural consistency
-
----
-
-# Recommended Workflow
+# Development Workflow
 
 1. Create `SYSTEM_OVERVIEW.md`
 2. Generate `SYSTEM_ARCHITECTURE.md`
@@ -19,7 +10,7 @@ The workflow is intentionally architecture-first and implementation-second to:
 6. Generate documentation
 7. Generate deployment files
 8. Run tests and refine
-9. Reviews
+9. Reviews (AI and manual)
 
 ---
 
