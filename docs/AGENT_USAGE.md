@@ -1,4 +1,4 @@
-# Playbook of prompts and workflow steps — Market Data Hub
+# Playbook of Prompts and Workflow Steps — Market Data Hub
 
 # Development Workflow
 
